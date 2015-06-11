@@ -2,99 +2,54 @@ package main
 
 import (
 	// "fmt"
+	"sort"
 	"sync"
 )
 
 type naiveMatcher struct{}
 
-func (b naiveMatcher) fuzzyMatch(pattern, text string, maxDistance int) *Match {
-	var result *Match
-	for startPos := 0; startPos < len(text)-len(pattern); startPos++ {
-		if text[startPos] == pattern[0] {
-			match := getMatch(pattern, text, maxDistance, startPos)
-			if result == nil || preferSecond(result, match) {
-				result = match
-			}
-		}
-	}
-	return result
-}
-
-// finds highlighting matches from startPos
-func getMatch(pattern, text string, maxDistance, startPos int) *Match {
-	textPos := startPos
-	patternPos := 0
-	distance := 0
-
-	matchStart := -1
-	var result Match
-	for ; distance <= maxDistance; textPos++ {
-		if text[textPos] == pattern[patternPos] { // char matches
-			if matchStart == -1 { // remember start
-				matchStart = textPos
-			}
-			patternPos++ // consume pattern
-		} else { // char does not match
-			if matchStart != -1 { // if there was a start set
-				result.Positions = append(result.Positions, StartEnd{matchStart, textPos}) // emit the interval
-				matchStart = -1                                                            // forget the old start
-			}
-			distance++ // increase number of non-matches
-		}
-		if patternPos == len(pattern) {
-			break // consumed complete pattern
-		}
-	}
-	result.Distance = distance
-	if matchStart != -1 { // end of the string
-		result.Positions = append(result.Positions, StartEnd{matchStart, textPos + 1})
-	}
-	if distance <= maxDistance && len(result.Positions) > 0 {
-		return &result
-	}
-	return nil
-}
-
-// prefer old distance, longer, earlier matches
-func preferSecond(old, potentialNew *Match) bool {
-	if old.Distance > potentialNew.Distance {
-		return true
-	}
-	lengthA := old.Positions[len(old.Positions)-1].End - old.Positions[0].Start
-	lengthB := potentialNew.Positions[len(old.Positions)-1].End - potentialNew.Positions[0].Start
-	if lengthA < lengthB {
-		return true
-	}
-	if old.Positions[0].Start > potentialNew.Positions[0].Start {
-		return true
-	}
-	return false
-}
-
-// experimental
-func (b naiveMatcher) fuzzyMatchParallel(pattern, text string, maxDistance, threads int) *Match {
+// to caller must normalize both pattern and text
+func (b naiveMatcher) fuzzyMatch(pattern, text string, maxDistance int) []Match {
 	ingress := make(chan int)
-	egress := make(chan *Match)
+	egress := make(chan Match)
+	concurrency := 1
+
+	//TODO is the parallelism worth it?
 
 	// scatter
 	go func() {
 		for start := 0; start < len(text)-len(pattern); start++ {
 			if text[start] == pattern[0] {
 				ingress <- int(start)
+				// concurrency++
 			}
 		}
 		close(ingress)
 	}()
 
 	var wg sync.WaitGroup
-	for i := 0; i < threads; i++ {
+	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for startPos := range ingress {
-				match := getMatch(pattern, text, maxDistance, startPos)
-				if match != nil {
-					egress <- match
+				d := int(0)
+				patternPos := 0
+				for textPos := startPos; d <= maxDistance; textPos++ {
+					if patternPos == len(pattern) {
+						egress <- Match{startPos, textPos, d}
+						break // pattern completely consumed
+					}
+					if patternPos+d == len(pattern) {
+						egress <- Match{startPos, textPos, d}
+						// there might be more matches
+					}
+					if text[textPos] == pattern[patternPos] {
+						patternPos++
+					} else {
+						d++
+					}
+
 				}
 			}
 		}()
@@ -106,11 +61,71 @@ func (b naiveMatcher) fuzzyMatchParallel(pattern, text string, maxDistance, thre
 	}()
 
 	// gather
-	var result *Match
+	matches := []Match{}
 	for match := range egress {
-		if result == nil || preferSecond(result, match) {
-			result = match
-		}
+		matches = append(matches, match)
 	}
+	if len(matches) == 0 {
+		return matches
+	}
+	sort.Sort(ByStartEndDistance(matches))
+
+	return resolveOverlaps(matches)
+}
+
+// assumes sorted input
+func resolveOverlaps(matches []Match) []Match {
+	result := []Match{}
+	last := matches[0]
+	for j := 1; j < len(matches); j++ {
+		this := matches[j]
+		if overlap(last, this) {
+			this = preference(last, this)
+		} else {
+			result = append(result, last)
+		}
+		last = this
+	}
+	result = append(result, last)
 	return result
+}
+
+func overlap(a, b Match) bool {
+	if a.Start == b.Start || a.End == b.End {
+		return true
+	}
+	// start of b in a
+	if a.Start < b.Start && a.End > b.Start {
+		return true
+	}
+	// start of a in b
+	if a.Start > b.Start && a.End < b.Start {
+		return true
+	}
+	return false
+}
+
+// prefer less distance, longer, earlier matches
+func preference(a, b Match) Match {
+	if a.Distance < b.Distance {
+		return a
+	}
+	if a.Distance > b.Distance {
+		return b
+	}
+	lengthA := a.End - a.Start
+	lengthB := b.End - b.Start
+	if lengthA > lengthB {
+		return a
+	}
+	if lengthA < lengthB {
+		return b
+	}
+	if a.Start < b.Start {
+		return a
+	}
+	if a.Start > b.Start {
+		return b
+	}
+	return a // same same
 }
