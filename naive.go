@@ -9,7 +9,7 @@ type naiveMatcher struct{}
 
 func (b naiveMatcher) fuzzyMatch(pattern, text string, maxDistance int) *Match {
 	var result *Match
-	for startPos := 0; startPos < len(text)-len(pattern); startPos++ {
+	for startPos := 0; startPos < len(text)-len(pattern)+1; startPos++ {
 		if text[startPos] == pattern[0] {
 			match := getMatch(pattern, text, maxDistance, startPos)
 			if result == nil || preferSecond(result, match) {

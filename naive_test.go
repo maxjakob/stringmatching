@@ -88,3 +88,12 @@ func TestDistanceTwoNaive(t *testing.T) {
 	expected = nil
 	check(naive.fuzzyMatch(pattern, text, distance), expected, t)
 }
+
+func TestMadonna(t *testing.T) {
+	distance := 2
+	pattern := "madonna"
+
+	text := "drake madonna"
+	expected := &Match{[]StartEnd{StartEnd{6, 13}}, 0}
+	check(naive.fuzzyMatch(pattern, text, distance), expected, t)
+}
